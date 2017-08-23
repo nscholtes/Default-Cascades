@@ -55,9 +55,9 @@ a_diff = a_maxvec.^(1-gamma_a) - a_minvec.^(1-gamma_a);
 
 u = rand(1,n_draws);
 
-%all_draws = (a_minvec.^(1-gamma_a)+ u.*(a_diff)).^(1./(1-gamma_a));
+all_draws = (a_minvec.^(1-gamma_a)+ u.*(a_diff)).^(1./(1-gamma_a));
 
-all_draws = a_minvec.*(1-u).^(1./(1-gamma_a));
+%all_draws = a_minvec.*(1-u).^(1./(1-gamma_a));
 all_draws = all_draws';
 
 % Logarithmic binning to obtain final fitness vector

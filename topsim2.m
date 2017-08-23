@@ -9,11 +9,10 @@ function [] = topsim()
 
 addpath(genpath('/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/MATLAB Codes'));
 
-
 % Output figures to directory with LaTeX draft for automatic updating
 fig_output  = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/Drafts/Figures/';
 data_output = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/R Codes/';
-tab_output  = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/Drafts/Tables/';
+%tab_output  = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/Drafts/Tables/';
 
 %--------------------------------------------------------------------------
 %% CALIBRATION OF SIMULATION PARAMETERS
@@ -25,13 +24,13 @@ tab_output  = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/Drafts/Tabl
 
 n_banks     = 250;        % Number of banks
 
-a_min   = [10 50];         
-a_ratio = [10,50];       
+a_min   = [10,50]; % Domain: Size of smallest bank
+a_ratio = [20,50]; % Domain: Ratio of largest to smallest bank
 gamma_a = [2 3];         
 
 alpha   = [0.5 1];
 beta    = [0.5 1];
-d       = [0.75 0.9];
+d       = [0.5 1];
 
 networkpars = [a_min; a_ratio; gamma_a; alpha; beta; d];
 
@@ -39,10 +38,10 @@ networkpars = [a_min; a_ratio; gamma_a; alpha; beta; d];
 % Initial balance sheet weights
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-theta = 0.8;   % external asset/asset ratio
-gamma = 0.1;   % capital/liabilites ratio
+theta = [0.5,0.9];   % external asset/asset ratio
+gamma = [0.01,0.1] ; % capital/asset ratio
 
-BSpars = [theta gamma];
+BSpars = [theta; gamma];
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Shock calibrations
@@ -58,18 +57,25 @@ shockspecs = {shocktype,targetcriterion};
 shockpars  = [shockmagnitude numshockedbanks];
 
 %--------------------------------------------------------------------------
-% Latin hypercuble sampling
+% Latin hypercube sampling
 %--------------------------------------------------------------------------
 numsamples = 1000;
-[LHD] = createLH(networkpars,numsamples);
+
+LH_input = [networkpars; BSpars];
+
+[LHD] = createLH(LH_input,numsamples);
 %--------------------------------------------------------------------------
 % Generating the network
 %--------------------------------------------------------------------------
 
 tic
 [banksizedist,adjacency_matrix,probability_matrix] = netgen2(n_banks,LHD,numsamples);
+
+[Networks,globalnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output);
+
 toc
 
+%load('simnet_250banks_1000networks.mat');
 %--------------------------------------------------------------------------
 %% Cascading defaults model
 %--------------------------------------------------------------------------
@@ -86,35 +92,37 @@ for k = 1:numsamples
         banks(i).assets.total = banksizedist(i,k);
     end
     
-    [~,cascademodelresults(k,:)] = cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,...
-        adjacency_matrix(:,:,k),probability_matrix(:,:,k),BSpars,shockpars,shockspecs);
+    fprintf(1,'Network iteriation: %d/%d\n',k,numsamples)
+    
+    BS_input = [LHD(k,7), LHD(k,8)];
+    
+    [~,cascademodelresults(k,:),BS_exp_vars(k,:),banks_CDM_results_av(:,:,k)] = cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,...
+        adjacency_matrix(:,:,k),probability_matrix(:,:,k),BS_input,shockpars,shockspecs);
+    clc
 end
 toc
 
+% Create tables
 CM_table = array2table(cascademodelresults);
+CM_table.Properties.VariableNames = {'NumFailedBanks','Norm_FailedBanks','TotCapitalLoss','Norm_CapitalLoss','SimulationTime'};
 
-CM_table.Properties.VariableNames = {'NumFailedBanks','TotCapitalLoss','SimulationTime'}
-load('simnet+casc_250banks_1000networks.mat');
 
-%--------------------------------------------------------------------------
-% Global network measures
-%--------------------------------------------------------------------------
+BS_EV_table = array2table(BS_exp_vars);
+BS_EV_table.Properties.VariableNames  = {'Init_Capital','Norm_Init_Capital','Init_IB_exp','Norm_Init_IB_exp'};
 
-[Networks,globalnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output);
+save('simnet+casc_250banks_1000networks_CURR.mat');
 
 %--------------------------------------------------------------------------
-% Global regressions
+%% Output results to .csv file
 %--------------------------------------------------------------------------
 
 % Compute total capital initially in the system
 
+Data       = [cascademodelresults BS_exp_vars globalnetworkmeasures];
+Data_table = [CM_table BS_EV_table  Global_NM_table];
 
-Data       = [cascademodelresults globalnetworkmeasures];
-Data_table = [CM_table Global_NM_table];
+writetable(Data_table,strcat(data_output,'data_v2.csv'));
 
-writetable(Data_table,strcat(data_output,'data.csv'));
-
-globalregressions(Data);
 
 
 end

@@ -1,4 +1,5 @@
-function [banks,CascadeOutput] = cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,adjacency_matrix,probability_matrix,ratios,shockpars,shockspecs)
+function [banks,CascadeOutput,Balancesheet_EV,banks_CDM_results_av] = ...
+    cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,adjacency_matrix,probability_matrix,ratios,shockpars,shockspecs)
 
 %--------------------------------------------------------------------------
 %% Initialisation and preallocation
@@ -13,10 +14,19 @@ numshockedbanks = shockpars(2);
 shocktype       = shockspecs{1};
 targetcriterion = shockspecs{2};
 
+%lossvec = zeros(1,n_banks);
+
+init_assets  = zeros(1,n_banks);
+init_capital = zeros(1,n_banks);
+init_IBM_B   = zeros(1,n_banks);
+init_IBM_L   = zeros(1,n_banks);
+
 dispoutput = 0; % Show output on propagation dynamics (for debugging and future modifications)
 
 IB_loan_matrix      = zeros(n_banks,n_banks);
 IB_shockprop_matrix = zeros(n_banks,n_banks);
+
+bank_capital = zeros(n_banks,1);
 
 %--------------------------------------------------------------------------
 %% Calibrating heterogenous bank balance sheets
@@ -111,6 +121,28 @@ tempstore = banks;
 clearvars banks
 banks = orderfields(tempstore,permutationvector);
 
+% Collecting initial values for normalisation of results from cascading defaults model
+for i = ActiveBanks
+    init_assets(i)  = banks(i).assets.total;
+    init_capital(i) = banks(i).liabilities.capital;  
+    init_IBM_B(i)   = banks(i).liabilities.IB_Tot_Borrowing;
+end
+
+Tot_init_assets   = sum(init_assets);
+Tot_init_capital  = sum(init_capital);
+Norm_init_capital = Tot_init_capital/Tot_init_assets;
+
+Tot_init_IB_exp  = sum(init_IBM_B);
+Norm_init_IB_exp = Tot_init_IB_exp/Tot_init_assets;
+
+%--------------------------------------------------------------------------
+%% Collecting individual bank information
+%--------------------------------------------------------------------------
+
+for i = ActiveBanks
+    bank_capital(i) = banks(i).liabilities.capital;
+end
+
 %--------------------------------------------------------------------------
 %% Propagation dynamics
 %--------------------------------------------------------------------------
@@ -119,169 +151,55 @@ banks = orderfields(tempstore,permutationvector);
 
 % (I) Initial shock to external assets
 
+% Select set of shocked banks dependant on specification of random or targeted shock
+
 if strcmp(shocktype,'random')
-    shockedbanks = randsample(All_Borrowers,numshockedbanks);
+    n_runs       = 100; 
+    shock_matrix = zeros(n_runs,numshockedbanks);
+    for i = 1:n_runs
+        shock_matrix(i,:) = randsample(All_Borrowers,numshockedbanks); % Select initially shocked bank(s) from amongst 
+    end                                                                % all borrowers banks with at least one incoming edge
+elseif strcmp(shocktype,'targeted')
+    shockedbanks = randsample();
+    n_runs      = 100;    
 end
 
-shockedbanks = 1;
+%shockedbanks = 1; %initial_shockedbank = shockedbanks;
 
-initial_shockedbank = shockedbanks;
+TotFailedBanks      = zeros(1,n_runs);
+Norm_TotFailedBanks = zeros(1,n_runs);
 
-t=1;
+TotCapitalLoss      = zeros(1,n_runs);
+Norm_TotCapitalLoss = zeros(1,n_runs);
 
-for i = ActiveBanks
-    banks(i).shock(t) =0;
+shockterm = zeros(1,n_runs);
+
+banks_CDM_results   = zeros(n_banks,3,n_runs);
+
+for n = 1:n_runs   
+    shockedbanks = shock_matrix(n,:);
+    IB_loan_matrix      = zeros(n_banks,n_banks);
+    IB_shockprop_matrix = zeros(n_banks,n_banks);
+    
+    [TotFailedBanks(n),Norm_TotFailedBanks(n),TotCapitalLoss(n),Norm_TotCapitalLoss(n),banks_CDM_results(:,:,n),shockterm(n)] =...
+        cascadealgorithm(banks,n_banks,shockedbanks,ActiveBanks,FailedBanks,IB_loan_matrix,IB_shockprop_matrix,Tot_init_capital,shockpars,dispoutput);
 end
 
-banks(shockedbanks).shock(t) = banks(shockedbanks).assets.externalassets(t)*shockmagnitude;
-banks(shockedbanks).assets.externalassets(t+1) = banks(shockedbanks).assets.externalassets(t) - banks(shockedbanks).shock(t);
+% Compute averages across different runs of the cascade algorithm (with random shocks) across the same network
 
-while numel(FailedBanks) ~= n_banks 
-    
-    failurecount = 0; % Count number of failures in current propagation step
-    absorbcount  = 0; 
-    
-    if dispoutput == 1
-        disp('---------------------------------------------------------------------------------------------')
-        fprintf(1,'The current iteration step is %d\n',t);
-        disp('---------------------------------------------------------------------------------------------')
-    end
-    
-    IB_loan_matrix(:,:,t+1) = IB_loan_matrix(:,:,t);
-    
-    for i = ActiveBanks
-        banks(i).liabilities.IB_Bil_Lending    = nonzeros(IB_loan_matrix(i,:,t));
-        banks(i).liabilities.IB_Tot_Lending(t) = sum(banks(i).liabilities.IB_Bil_Lending);
-        
-        banks(i).liabilities.IB_Bil_Borrowing      = nonzeros(IB_loan_matrix(:,i,t));
-        banks(i).liabilities.IB_Tot_Borrowing(t) = sum(banks(i).liabilities.IB_Bil_Borrowing);
-        
-        banks(i).status(t) = 1;
-        banks(i).loss(t)   = 0;
-        
-    end
-    
-    for i = FailedBanks
-        banks(i).status(t) = 0;
-        banks(i).loss(t)   = 0;
-    end
+banks_CDM_results_av = mean(banks_CDM_results,3);
 
-    shockedbanks_update = [];
-    
-    for i = shockedbanks
-         if t > 1
-            banks(i).shock(t) = sum(IB_shockprop_matrix(i,:,t-1));
-         end
-         
-        % Case I: Initially shocked bank's capital sufficient to absorb loss - No further contagion from current shocked bank
-        if banks(i).shock(t)  < banks(i).liabilities.capital(t)
-            
-            absorbcount = absorbcount+1;
-            
-            banks(i).status(t) = 1;
-        
-            banks(i).liabilities.capital(t+1) = banks(i).liabilities.capital(t) - banks(i).shock(t); % Reduce capital by shock amount
-            
-            banks(i).loss(t) = banks(i).shock(t); 
-            
-            if dispoutput == 1
-                fprintf(1,'--> Bank %d is able to absorb the shock in period %d with a capital loss of %.3f\n',i,t,banks(i).shock(t));
-            end 
-            
-        % Case II: Insufficient capital to absorb loss. Bank fails and propagates to connected creditors 
-        elseif banks(i).shock(t) >= banks(i).liabilities.capital(t) 
-            
-            failurecount = failurecount+1;
- 
-            banks(i).status(t) = 0;
-                    
-            shockedbanks_update = [shockedbanks_update banks(i).lender_ids']; % After i's failure, update set of shocked banks = i's creditors
-            
-            banks(i).liabilities.capital(t+1) = 0;
-            
-            banks(i).loss(t) = banks(i).liabilities.capital(t);
-            
-            banks(i).residualshock(t) = banks(i).shock(t) - banks(i).liabilities.capital(t);
-            
-            Lvec_P = sprintf(' %.3g ',banks(i).lender_ids);
-            
-            if dispoutput == 1
-                if banks(i).num_lenders ~= 0
-                    fprintf(1,'--> Bank %d fails in period %d and trasmits %.3f to %d creditors: [%s]\n',...
-                        i,t,banks(i).residualshock(t),banks(i).num_lenders(t),Lvec_P)
-                else
-                    fprintf(1,'--> Bank %d fails in period %d but has no creditors to transmit shock to\n',i,t);
-                end
-            end
-            
-            % Case II-1: Shock absorbed by interbank liabilities
-            if banks(i).residualshock(t)  < banks(i).liabilities.IB_Tot_Borrowing(t)
-                
-               banks(i).shocktransmit = ((1-probability_matrix(banks(i).lender_ids,i))./...
-                   sum(1-probability_matrix(banks(i).lender_ids,i)))*banks(i).residualshock(t);
-                                           
-            % Case II-2: Residual shock larger than capital AND interbank liabilities --> Customer deposits as ultimate sink
-            else
-                banks(i).shocktransmit             = IB_loan_matrix(banks(i).lender_ids,i,t);
-                banks(i).residualshock2(t)         = banks(i).residualshock(t) - banks(i).liabilities.IB_Tot_Borrowing(t);
-                banks(i).liabilities.deposits(t+1) = 0;           
-            end
-            
-            % Update loan matrix to account for shock transmission between banks
-            IB_loan_matrix(banks(i).lender_ids,i,t+1)    = IB_loan_matrix(banks(i).lender_ids,i,t) - banks(i).shocktransmit;              
-            IB_shockprop_matrix(banks(i).lender_ids,i,t) = banks(i).shocktransmit;
-            
-            % Remove failed banks from lender and borrower sets
-            for j = ActiveBanks
-            	banks(j).lender_ids(banks(j).lender_ids == i)   = [];
-                banks(j).num_lenders(t+1) = numel(banks(j).lender_ids);
-                   
-                banks(j).borrower_ids(banks(j).borrower_ids == i) = [];
-                banks(j).num_borrowers(t+1) = numel(banks(j).borrower_ids);       
-            end
+TFB_av       = mean(TotFailedBanks);
+Norm_TFB_av  = mean(Norm_TotFailedBanks);
+TCL_av       = mean(TotCapitalLoss);
 
-            FailedBanks    = [FailedBanks i]; 
-            ActiveBanks(ActiveBanks == i) = [];
-               
-            for j = numel(FailedBanks)
-                shockedbanks_update(shockedbanks_update == FailedBanks(j)) = [];
-            end            
-        end
-    end
-    
-    if absorbcount == numel(shockedbanks)
-        if dispoutput == 1
-            disp('                       o----------------------------------o')
-            fprintf('                       | End of shock cascade in period %d |\n',t);
-            disp('                       o----------------------------------o')
-        end
-        shockterm = t;
-        break
-     end
-    
-    NumFailedBanks(t) = failurecount;
-    
-    nonshockedbanks   = setdiff(ActiveBanks,shockedbanks);
-    
-    % Update values for banks that weren't shocked in the current period
-    for i = nonshockedbanks
-        banks(i).liabilities.capital(t+1) = banks(i).liabilities.capital(t);
-        banks(i).status(t) = 1;
-        banks(i).loss(t)   = 0;
-    end
-    
-    shockedbanks = shockedbanks_update;
-    t=t+1;
-end
+Norm_TCL_av  = mean(Norm_TotCapitalLoss);
+shockterm_av = mean(shockterm);
 
-for i = 1:n_banks
-    lossvec(i,:) = banks(i).loss;
-end
+% Collecting output
+CascadeOutput   = [TFB_av, Norm_TFB_av,TCL_av,Norm_TCL_av,shockterm_av];
+Balancesheet_EV = [Tot_init_assets, Tot_init_capital, Norm_init_capital Tot_init_IB_exp Norm_init_IB_exp];
 
-TotFailedBanks = sum(NumFailedBanks);
-TotCapitalLoss = sum(sum(lossvec)); 
-
-CascadeOutput = [TotFailedBanks, TotCapitalLoss, shockterm];
 %--------------------------------------------------------------------------
 % Plot cascading default dynamics
 %--------------------------------------------------------------------------
