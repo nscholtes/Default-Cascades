@@ -24,7 +24,6 @@ alpha = X(:,4);
 beta  = X(:,5);
 d     = X(:,6);
 
-
 % Monte Carlo simulation with $n_draws$ draws from the distribution using
 % the inverse transform sampling method
 

@@ -1,12 +1,10 @@
-function [Networks,globalnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output)
+function [Networks,globalnetworkmeasures,localnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output)
 
-makeplots = 1; % Select whether to output plots of various network measures
-
+makeplots    = 0; % Select whether to output plots of various network measures
 fig_output_N = strcat(fig_output,'Results-networks/');
 
-node_nums= 1:n_banks;
-
-node_ids = cellfun(@num2str, num2cell(node_nums), 'UniformOutput', false);
+node_nums = 1:n_banks;
+node_ids  = cellfun(@num2str, num2cell(node_nums), 'UniformOutput', false);
 
 mean_str = '$\bar{x}$ = '; var_str = '$s^{2}$ = ';
 
@@ -19,6 +17,8 @@ bins = 50;
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Preallocation
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Global measures
 
 density     = zeros(numsamples,1);
 reciprocity = zeros(numsamples,1);
@@ -37,9 +37,18 @@ avclustering    = zeros(numsamples,1);
 out_degdist      = zeros(n_banks,numsamples);
 in_degdist       = zeros(n_banks,numsamples);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Computing network measures
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+indegree_centrality  = zeros(n_banks,numsamples);
+outdegree_centrality = zeros(n_banks,numsamples);
+
+incloseness_centrality  = zeros(n_banks,numsamples);
+outcloseness_centrality = zeros(n_banks,numsamples);
+
+betweenness_centrality = zeros(n_banks,numsamples);
+pagerank_centrality    = zeros(n_banks,numsamples);
+
+%--------------------------------------------------------------------------
+%% GLOBAL NETWORK MEASURES
+%--------------------------------------------------------------------------
 
 % Density
 
@@ -223,4 +232,28 @@ figure
 % Out-degree distribution
 
 end
+
+%--------------------------------------------------------------------------
+%% LOCAL NETWORK MEASURES
+%--------------------------------------------------------------------------
+
+for k = 1:numsamples
+    indegree_centrality(:,k)  = centrality(Networks.(Network{k}),'indegree');
+    outdegree_centrality(:,k) = centrality(Networks.(Network{k}),'outdegree');
+    
+    incloseness_centrality(:,k)  = centrality(Networks.(Network{k}),'incloseness');
+    outcloseness_centrality(:,k) = centrality(Networks.(Network{k}),'outcloseness');
+    
+    betweenness_centrality(:,k) = centrality(Networks.(Network{k}),'betweenness');
+    pagerank_centrality(:,k)    = centrality(Networks.(Network{k}),'pagerank'); 
 end
+
+localnetworkmeasures = [reshape(indegree_centrality,[n_banks,1,numsamples])    reshape(outdegree_centrality,[n_banks,1,numsamples]) ...
+                        reshape(incloseness_centrality,[n_banks,1,numsamples]) reshape(outcloseness_centrality,[n_banks,1,numsamples])...
+                        reshape(betweenness_centrality,[n_banks,1,numsamples]) reshape(pagerank_centrality,[n_banks,1,numsamples])];
+                    
+%Local_NM_table = array2table(localnetworkmeasures);
+%Local_NM_table.Properties.VariableNames = {'Indeg_ctrly','Outdeg_ctrly','Inclose_ctrly','Outclose_ctrly','Betweenness_ctrly','Pagerank_ctrly'};
+end
+
+

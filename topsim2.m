@@ -1,7 +1,7 @@
-function [] = topsim()
+function [LHD,Data_table,bank_results,Networks] = topsim()
 
 %--------------------------------------------------------------------------
-% MATLAB code for 'Default cascades and systemic risk on different multilayer interbank network topologies'
+% MATLAB code for 'Default cascades and systemic risk on different interbank network topologies'
 % by Nicolas K. Scholtes (2017)
 
 % Copyright (C) Nicolas K. Scholtes, 2017
@@ -11,31 +11,36 @@ addpath(genpath('/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/MATLAB Co
 
 % Output figures to directory with LaTeX draft for automatic updating
 fig_output  = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/Drafts/Figures/';
+% Results tables loaded into R for empirical treatment
 data_output = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/R Codes/';
-%tab_output  = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/Drafts/Tables/';
+tab_output  = '/Users/nscholte/Desktop/Research/Ch.3 - Systemic risk/Drafts/Tables/';
 
 %--------------------------------------------------------------------------
-%% CALIBRATION OF SIMULATION PARAMETERS
+%% CALIBRATION OF SIMULATION PARMETERS
 %--------------------------------------------------------------------------
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Bank size/fitness distribution parameters
+%%% Featured in Equations () and () of the paper
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-n_banks     = 250;        % Number of banks
+n_banks = 250; % Number of banks
 
+%Bank size distribution
 a_min   = [10,50]; % Domain: Size of smallest bank
 a_ratio = [20,50]; % Domain: Ratio of largest to smallest bank
-gamma_a = [2 3];         
+gamma_a = [2 3];   % Power law exponent for bank size distribution     
 
+% Disassortative network generation algorithm parameters
 alpha   = [0.5 1];
 beta    = [0.5 1];
-d       = [0.5 1];
+d       = [0.5 1]; % Calibrate network density
 
 networkpars = [a_min; a_ratio; gamma_a; alpha; beta; d];
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Initial balance sheet weights
+%%% Featured in Equations () and () of the paper
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 theta = [0.5,0.9];   % external asset/asset ratio
@@ -44,85 +49,158 @@ gamma = [0.01,0.1] ; % capital/asset ratio
 BSpars = [theta; gamma];
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Shock calibrations
+% Shock calibrations from paper
+%%% Random shock (RS) : {1,5,10}/250 banks
+%%% Targeted shock(TS): {1,5,10}/10 largest banks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-shockmagnitude  = 0.5;      % Fraction of external assets shocked
-numshockedbanks = 1;
+shockmagnitude  = 0.5;        % Fraction of external assets shocked
+numshockedbanks = 10;          % Number of shocked banks       
+shocktype       = 'random'; % Choose between 'random' or 'targeted' shock   
+omega = 1;         % Calibrated semi-elasticity parameter in inverse demand function for external assets
 
-shocktype       = 'random'; % Choose between random or targeted shock
-targetcriterion = 'betweenness_centrality'; % Location of targeted shock based on various criteria
-                                            % Bank size or various node centrality measures
-shockspecs = {shocktype,targetcriterion};                                           
-shockpars  = [shockmagnitude numshockedbanks];
 
+if strcmp(shocktype,'random')
+    targetgroup     = n_banks;
+    shocklabel      = 'RS_';
+elseif strcmp(shocktype,'targeted')
+    targetgroup      = 0.04*n_banks; % = 10 banks
+    shocklabel  = 'TS_';
+end
+
+shockpars       = [shockmagnitude numshockedbanks omega];
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Toggle parameters related to high-level functioning of the algorithm
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+dispoutput    = 0; % Boolean variable: Show output for propagation dynamics (slow: use for debugging when modifying code)
+liquidityrisk = 0; % Boolean variable: Allow for indirect contagion via external asset firesales (set liquidityrisk == 1)
+
+if liquidityrisk == 1
+    shockpars(3) = omega;
+    LRlabel      = '_LRon';
+    LRval        = 'on';
+else
+    LRlabel = '_LRoff';
+    LRval   = 'off';
+end
 %--------------------------------------------------------------------------
 % Latin hypercube sampling
 %--------------------------------------------------------------------------
 numsamples = 1000;
-
-LH_input = [networkpars; BSpars];
-
-[LHD] = createLH(LH_input,numsamples);
+LH_input   = [networkpars; BSpars];
+[LHD]      = createLH(LH_input,numsamples);
 %--------------------------------------------------------------------------
 % Generating the network
 %--------------------------------------------------------------------------
 
 tic
+% Generate the network (represented by adjacency matrix and size vector) based on parameter set output from Latin Hypercube Design
 [banksizedist,adjacency_matrix,probability_matrix] = netgen2(n_banks,LHD,numsamples);
 
-[Networks,globalnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output);
-
+% Compute global and local (i.e. centrality) measures) for each simulated network
+[Networks,globalnetworkmeasures,localnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output);
 toc
 
-%load('simnet_250banks_1000networks.mat');
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+load('simnet_250banks_1000networks.mat'); % Network data prior to cascading defaults model (for testing)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 %--------------------------------------------------------------------------
 %% Cascading defaults model
 %--------------------------------------------------------------------------
 
 % Running the cascading defaults model on each simulated network
 tic
-for k = 1:numsamples   
+for k = 1:numsamples
     ActiveBanks = 1:n_banks;
     FailedBanks = [];
     
     banks   = struct;
-
+    
     for i =1:n_banks
         banks(i).assets.total = banksizedist(i,k);
     end
     
-    fprintf(1,'Network iteriation: %d/%d\n',k,numsamples)
+    disp('=====================================================');
+    fprintf(1,'%s shock of %d/%d banks, liquidity effects: %s\n',shocktype,numshockedbanks,targetgroup,LRval);
+    disp('=====================================================');
+
+    fprintf(1,'Network iteration: %d/%d\n',k,numsamples)
     
     BS_input = [LHD(k,7), LHD(k,8)];
     
-    [~,cascademodelresults(k,:),BS_exp_vars(k,:),banks_CDM_results_av(:,:,k)] = cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,...
-        adjacency_matrix(:,:,k),probability_matrix(:,:,k),BS_input,shockpars,shockspecs);
+    % NESTED FUNCTION: This constitutes the cascading defaults model that generates our results
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    % Outer level: cascadingdefaults initiates bank balance sheets, sets up framework for averaging results.
+    % Inner level: cascadealgorithm applies the shock and runs the contagion mechanism by which it propagates through the system
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    [banks,cascademodelresults(k,:),BS_exp_vars(k,:),banks_CDM_results_av(:,:,k),banks_BS_results(:,:,k),...
+        shockedbanks_centrality_av(:,:,k),initshock_magnitude_av(k)] =...
+        cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,adjacency_matrix(:,:,k),probability_matrix(:,:,k),...
+        localnetworkmeasures(:,:,k),BS_input,shockpars,shocktype,targetgroup,liquidityrisk,dispoutput);
     clc
 end
 toc
 
-% Create tables
+% Creating global (network-level) regression tables
 CM_table = array2table(cascademodelresults);
-CM_table.Properties.VariableNames = {'NumFailedBanks','Norm_FailedBanks','TotCapitalLoss','Norm_CapitalLoss','SimulationTime'};
-
+CM_table.Properties.VariableNames = {'NumFailedBanks','Norm_FailedBanks','TotCapitalLoss',...
+    'Norm_CapitalLoss','SimulationTime','d_assetprice_abs','d_assetprice_pct'};
 
 BS_EV_table = array2table(BS_exp_vars);
-BS_EV_table.Properties.VariableNames  = {'Init_Capital','Norm_Init_Capital','Init_IB_exp','Norm_Init_IB_exp'};
+BS_EV_table.Properties.VariableNames  = {'Init_Assets','Init_Capital','Norm_Init_Capital','Init_IB_exp','Norm_Init_IB_exp'};
 
-save('simnet+casc_250banks_1000networks_CURR.mat');
+% Creating local (bank level) regression tables
+bank_results = cat(2,banks_CDM_results_av,banks_BS_results,localnetworkmeasures);
 
 %--------------------------------------------------------------------------
-%% Output results to .csv file
+%% Output results to .mat and .csv formats
 %--------------------------------------------------------------------------
 
-% Compute total capital initially in the system
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Global analysis - organising output from cascadingdefaults
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-Data       = [cascademodelresults BS_exp_vars globalnetworkmeasures];
-Data_table = [CM_table BS_EV_table  Global_NM_table];
+% (I) Centrality of shocked banks
+for i = 1:numsamples
+    SB_centrality(i,:) = shockedbanks_centrality_av(:,:,i);
+end
 
-writetable(Data_table,strcat(data_output,'data_v2.csv'));
+SBC_table = array2table(SB_centrality);
+SBC_table.Properties.VariableNames = {'Indeg_cent_SB','Outdeg_cent_SB',...
+                                      'Inclose_cent_SB','Outclose_cent_SB'...
+                                      'Btwn_cent_SB','Pagerank_cent_SB'};
 
+% (II) Initial shock magnitude                                 
+initshock_magnitude_av = initshock_magnitude_av';
+ISM_table = array2table(initshock_magnitude_av);
+ISM_table.Properties.VariableNames = {'Shock_size'};
 
+timestamp = datestr(datetime('today'));
 
+Data       = [cascademodelresults BS_exp_vars globalnetworkmeasures,SB_centrality,initshock_magnitude_av];
+Data_table = [CM_table BS_EV_table  Global_NM_table SBC_table ISM_table];
+
+% cleaning workspace - 1
+clearvars a_min a_ratio ActiveBank adjacency_matrix alpha beta banksizedist BSpars BS_input d gamma gamma_a i k LH_input n_banks...
+    networkpars probability_matrix shockmagnitude shockpars shockpercentage shockspecs shocktype targetcriterion targetgroup...
+    theta ActiveBanks FailedBanks shockedbanks_centrality_av
+
+% (III) Saving output. Produces a string featuring: date produced, type of shock, number of shocked banks, presence of liquidity effects
+save(strcat('output_',timestamp,'_',shocklabel,num2str(numshockedbanks),LRlabel,'.mat'));                            % Save workspace as .mat file
+writetable(Data_table,strcat(data_output,'data_',timestamp,'_',shocklabel,num2str(numshockedbanks),LRlabel,'.csv')); % Output data to .csv file
+
+% (IV) Extract 100 values from LHD for inclusion in paper
+rand_LH_draws_ind = randsample(1:numsamples,100);
+
+rand_LH_draws = LHD(rand_LH_draws_ind,:);
+rand_LH_draws_tab = array2table(rand_LH_draws);
+rand_LH_draws_tab.Properties.VariableNames = {'a_min','a_ratio','gamma_a','alpha','beta','d','theta','gamma'};
+
+writetable(rand_LH_draws_tab,strcat(tab_output,'LH_draws.xlsx'));
+
+% cleaning workspace - 2
+clearvars timestamp shocklabel numshockedbanks rand_LH_draws numsamples
 end

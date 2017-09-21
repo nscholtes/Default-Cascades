@@ -1,5 +1,6 @@
-function [banks,CascadeOutput,Balancesheet_EV,banks_CDM_results_av] = ...
-    cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,adjacency_matrix,probability_matrix,ratios,shockpars,shockspecs)
+function [banks,CascadeOutput,Balancesheet_EV,banks_CDM_results_av,banks_BS_results,shockedbanks_centrality_av,initshock_magnitude_av] = ...
+    cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,adjacency_matrix,probability_matrix,...
+    localnetworkmeasures,ratios,shockpars,shocktype,targetgroup,liquidityrisk,dispoutput)
 
 %--------------------------------------------------------------------------
 %% Initialisation and preallocation
@@ -8,25 +9,17 @@ function [banks,CascadeOutput,Balancesheet_EV,banks_CDM_results_av] = ...
 theta = ratios(1);
 gamma = ratios(2);
 
-shockmagnitude  = shockpars(1);
+tstop = 1000;
+
 numshockedbanks = shockpars(2);
 
-shocktype       = shockspecs{1};
-targetcriterion = shockspecs{2};
-
-%lossvec = zeros(1,n_banks);
-
-init_assets  = zeros(1,n_banks);
-init_capital = zeros(1,n_banks);
-init_IBM_B   = zeros(1,n_banks);
-init_IBM_L   = zeros(1,n_banks);
-
-dispoutput = 0; % Show output on propagation dynamics (for debugging and future modifications)
+init_assets  = zeros(n_banks,1);
+init_capital = zeros(n_banks,1);
+init_IBM_B   = zeros(n_banks,1);
+init_IBM_L   = zeros(n_banks,1);
 
 IB_loan_matrix      = zeros(n_banks,n_banks);
 IB_shockprop_matrix = zeros(n_banks,n_banks);
-
-bank_capital = zeros(n_banks,1);
 
 %--------------------------------------------------------------------------
 %% Calibrating heterogenous bank balance sheets
@@ -101,7 +94,7 @@ for i = ActiveBanks
     banks(i).liabilities.deposits = banks(i).assets.total - (banks(i).liabilities.capital+banks(i).liabilities.IB_Tot_Borrowing);   
 end
 
-% Collecting all borrower, lender and intermediary information
+% (VII) Collecting all borrower, lender and intermediary information
 
 for i = ActiveBanks    
     Borrower_vec(i)     = banks(i).IB_IsBorrower;
@@ -121,27 +114,30 @@ tempstore = banks;
 clearvars banks
 banks = orderfields(tempstore,permutationvector);
 
-% Collecting initial values for normalisation of results from cascading defaults model
+% (VIII) Collecting initial values for normalisation of results from cascading defaults model
 for i = ActiveBanks
     init_assets(i)  = banks(i).assets.total;
     init_capital(i) = banks(i).liabilities.capital;  
     init_IBM_B(i)   = banks(i).liabilities.IB_Tot_Borrowing;
+    init_IBM_L(i)   = banks(i).assets.IB_Tot_Lending;
+    
+    init_ext_assets(i) = banks(i).assets.externalassets;
 end
 
-Tot_init_assets   = sum(init_assets);
+system_ext_assets = sum(init_ext_assets);
+
+banks_BS_results = [init_assets init_capital init_IBM_B init_IBM_L];
+
+Tot_init_assets     = sum(init_assets);
+Tot_init_ext_assets = sum(init_ext_assets);
+
 Tot_init_capital  = sum(init_capital);
 Norm_init_capital = Tot_init_capital/Tot_init_assets;
 
 Tot_init_IB_exp  = sum(init_IBM_B);
 Norm_init_IB_exp = Tot_init_IB_exp/Tot_init_assets;
 
-%--------------------------------------------------------------------------
-%% Collecting individual bank information
-%--------------------------------------------------------------------------
-
-for i = ActiveBanks
-    bank_capital(i) = banks(i).liabilities.capital;
-end
+banks_init = banks;
 
 %--------------------------------------------------------------------------
 %% Propagation dynamics
@@ -160,35 +156,68 @@ if strcmp(shocktype,'random')
         shock_matrix(i,:) = randsample(All_Borrowers,numshockedbanks); % Select initially shocked bank(s) from amongst 
     end                                                                % all borrowers banks with at least one incoming edge
 elseif strcmp(shocktype,'targeted')
-    shockedbanks = randsample();
-    n_runs      = 100;    
+    n_runs = 10;
+    for i = 1:n_runs
+        shock_matrix(i,:) = randsample(ActiveBanks(1:targetgroup),numshockedbanks);
+    end  
 end
-
-%shockedbanks = 1; %initial_shockedbank = shockedbanks;
 
 TotFailedBanks      = zeros(1,n_runs);
 Norm_TotFailedBanks = zeros(1,n_runs);
-
 TotCapitalLoss      = zeros(1,n_runs);
 Norm_TotCapitalLoss = zeros(1,n_runs);
 
-shockterm = zeros(1,n_runs);
-
+shockterm           = zeros(1,n_runs);
+initshock_magnitude = zeros(1,n_runs);
 banks_CDM_results   = zeros(n_banks,3,n_runs);
+assetprice          = zeros(n_runs,tstop);
 
 for n = 1:n_runs   
     shockedbanks = shock_matrix(n,:);
-    IB_loan_matrix      = zeros(n_banks,n_banks);
+    
+    shockedbanks_IDC(n,:) = localnetworkmeasures(shockedbanks,1)'; % In-degree centrality of shocked banks
+    shockedbanks_ODC(n,:) = localnetworkmeasures(shockedbanks,2)'; % Out-degree centrality
+    
+    shockedbanks_IC(n,:)  = localnetworkmeasures(shockedbanks,3)'; % In-closeness centrality 
+    shockedbanks_OC(n,:)  = localnetworkmeasures(shockedbanks,4)'; % Out-closeness centrality 
+    
+    shockedbanks_BC(n,:)  = localnetworkmeasures(shockedbanks,5)'; % Betweenness centrality
+    shockedbanks_PRC(n,:) = localnetworkmeasures(shockedbanks,6)'; % PageRank centrality
+    
+    %IB_loan_matrix      = zeros(n_banks,n_banks);
     IB_shockprop_matrix = zeros(n_banks,n_banks);
     
-    [TotFailedBanks(n),Norm_TotFailedBanks(n),TotCapitalLoss(n),Norm_TotCapitalLoss(n),banks_CDM_results(:,:,n),shockterm(n)] =...
-        cascadealgorithm(banks,n_banks,shockedbanks,ActiveBanks,FailedBanks,IB_loan_matrix,IB_shockprop_matrix,Tot_init_capital,shockpars,dispoutput);
+    [banks,TotFailedBanks(n),Norm_TotFailedBanks(n),TotCapitalLoss(n),Norm_TotCapitalLoss(n),banks_CDM_results(:,:,n),...
+        shockterm(n),initshock_magnitude(n),assetprice(n,1:shockterm(n))] =...
+        cascadealgorithm(banks_init,n_banks,shockedbanks,ActiveBanks,FailedBanks,probability_matrix,IB_loan_matrix,IB_shockprop_matrix,...
+        Tot_init_capital,Tot_init_ext_assets,shockpars,dispoutput,liquidityrisk,tstop);
+    
+    d_assetprice_abs(n) = assetprice(n,1) - assetprice(n,shockterm(n));                          % Absolute change in asset price
+    d_assetprice_pct(n) =  ((assetprice(n,shockterm(n)) - assetprice(n,1))/assetprice(n,1))*100; % Percentage change in asset price
+   
 end
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Compute averages across different runs of the cascade algorithm (with random shocks) across the same network
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-banks_CDM_results_av = mean(banks_CDM_results,3);
+% Various centrality measures of shocked banks
+shockedbanks_centrality = [shockedbanks_IDC shockedbanks_ODC shockedbanks_IC shockedbanks_OC shockedbanks_BC shockedbanks_PRC];
 
+if numshockedbanks == 1
+    shockedbanks_centrality_av = mean(shockedbanks_centrality);
+else
+    for i=1:size(localnetworkmeasures,2)
+        SBC_temp(:,i) = mean(shockedbanks_centrality(:,(numshockedbanks*i)-(numshockedbanks-1):numshockedbanks*i),2);
+    end
+    shockedbanks_centrality_av = mean(SBC_temp);
+end
+
+initshock_magnitude_av = mean(initshock_magnitude); % Magnitude of initial shock
+
+banks_CDM_results_av = mean(banks_CDM_results,3);   % Cascading default model results for individual banks (bank level)
+
+% Cascading default model results over all banks (network level)
 TFB_av       = mean(TotFailedBanks);
 Norm_TFB_av  = mean(Norm_TotFailedBanks);
 TCL_av       = mean(TotCapitalLoss);
@@ -196,8 +225,13 @@ TCL_av       = mean(TotCapitalLoss);
 Norm_TCL_av  = mean(Norm_TotCapitalLoss);
 shockterm_av = mean(shockterm);
 
-% Collecting output
-CascadeOutput   = [TFB_av, Norm_TFB_av,TCL_av,Norm_TCL_av,shockterm_av];
+% Change in asset price over the simulation
+d_assetprice_abs_av = mean(d_assetprice_abs);
+d_assetprice_pct_av = mean(d_assetprice_pct);
+d_assetprice_av     = [d_assetprice_abs_av d_assetprice_pct_av];
+
+% Collecting output at the network level
+CascadeOutput   = [TFB_av, Norm_TFB_av,TCL_av,Norm_TCL_av,shockterm_av d_assetprice_av];
 Balancesheet_EV = [Tot_init_assets, Tot_init_capital, Norm_init_capital Tot_init_IB_exp Norm_init_IB_exp];
 
 %--------------------------------------------------------------------------
