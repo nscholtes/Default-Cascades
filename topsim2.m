@@ -1,4 +1,4 @@
-function [LHD,Data_table,bank_results,Networks] = topsim()
+function [LHD,Data_table,bank_results,Networks] = topsim2()
 
 %--------------------------------------------------------------------------
 % MATLAB code for 'Default cascades and systemic risk on different interbank network topologies'
@@ -34,7 +34,7 @@ gamma_a = [2 3];   % Power law exponent for bank size distribution
 % Disassortative network generation algorithm parameters
 alpha   = [0.5 1];
 beta    = [0.5 1];
-d       = [0.5 1]; % Calibrate network density
+d       = [0.1 1]; % Calibrate network density
 
 networkpars = [a_min; a_ratio; gamma_a; alpha; beta; d];
 
@@ -48,16 +48,40 @@ gamma = [0.01,0.1] ; % capital/asset ratio
 
 BSpars = [theta; gamma];
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Shock calibrations from paper
+%--------------------------------------------------------------------------
+% Latin hypercube sampling
+%--------------------------------------------------------------------------
+numsamples = 1000;
+LH_input   = [networkpars; BSpars];
+[LHD]      = createLH(LH_input,numsamples);
+%--------------------------------------------------------------------------
+% Generating the network
+%--------------------------------------------------------------------------
+
+tic
+% Generate the network (represented by adjacency matrix and size vector) based on parameter set output from Latin Hypercube Design
+[banksizedist,adjacency_matrix,probability_matrix] = netgen2(n_banks,LHD,numsamples);
+
+% Compute global and local (i.e. centrality) measures) for each simulated network
+[Networks,globalnetworkmeasures,localnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output);
+toc
+
+save('simnet_250banks_1000networks.mat'); % Network data prior to cascading defaults model (for testing)
+
+%--------------------------------------------------------------------------
+%% Shock calibrations from paper
 %%% Random shock (RS) : {1,5,10}/250 banks
 %%% Targeted shock(TS): {1,5,10}/10 largest banks
+%--------------------------------------------------------------------------
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+load('simnet_250banks_1000networks.mat'); % Network data prior to cascading defaults model (for testing)
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-shockmagnitude  = 0.5;        % Fraction of external assets shocked
-numshockedbanks = 10;          % Number of shocked banks       
-shocktype       = 'random'; % Choose between 'random' or 'targeted' shock   
-omega = 1;         % Calibrated semi-elasticity parameter in inverse demand function for external assets
+shockmagnitude  = 0.35;      % Fraction of external assets shocked
+numshockedbanks = 5;       % Number of shocked banks       
+shocktype       = 'targeted'; % Choose between 'random' or 'targeted' shock   
+omega = 1.054;              % Calibrated semi-elasticity parameter in inverse demand function for external assets
 
 
 if strcmp(shocktype,'random')
@@ -85,27 +109,6 @@ else
     LRlabel = '_LRoff';
     LRval   = 'off';
 end
-%--------------------------------------------------------------------------
-% Latin hypercube sampling
-%--------------------------------------------------------------------------
-numsamples = 1000;
-LH_input   = [networkpars; BSpars];
-[LHD]      = createLH(LH_input,numsamples);
-%--------------------------------------------------------------------------
-% Generating the network
-%--------------------------------------------------------------------------
-
-tic
-% Generate the network (represented by adjacency matrix and size vector) based on parameter set output from Latin Hypercube Design
-[banksizedist,adjacency_matrix,probability_matrix] = netgen2(n_banks,LHD,numsamples);
-
-% Compute global and local (i.e. centrality) measures) for each simulated network
-[Networks,globalnetworkmeasures,localnetworkmeasures,Global_NM_table] = networkmeasures(adjacency_matrix,n_banks,numsamples,fig_output);
-toc
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-load('simnet_250banks_1000networks.mat'); % Network data prior to cascading defaults model (for testing)
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %--------------------------------------------------------------------------
 %% Cascading defaults model
@@ -115,8 +118,8 @@ load('simnet_250banks_1000networks.mat'); % Network data prior to cascading defa
 tic
 for k = 1:numsamples
     ActiveBanks = 1:n_banks;
-    FailedBanks = [];
-    
+    FailedBanks = []; 
+     
     banks   = struct;
     
     for i =1:n_banks
@@ -133,21 +136,22 @@ for k = 1:numsamples
     
     % NESTED FUNCTION: This constitutes the cascading defaults model that generates our results
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    % Outer level: cascadingdefaults initiates bank balance sheets, sets up framework for averaging results.
+    % Outer level: cascadingdefaults initiates bank balance sheets, sets up framework for averaging results across shocks.
     % Inner level: cascadealgorithm applies the shock and runs the contagion mechanism by which it propagates through the system
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     [banks,cascademodelresults(k,:),BS_exp_vars(k,:),banks_CDM_results_av(:,:,k),banks_BS_results(:,:,k),...
-        shockedbanks_centrality_av(:,:,k),initshock_magnitude_av(k)] =...
+        shockedbanks_initBS_av(k,:),shockedbanks_centrality_av(:,:,k),initshock_magnitude_av(k)] =...
         cascadingdefaults(banks,n_banks,ActiveBanks,FailedBanks,adjacency_matrix(:,:,k),probability_matrix(:,:,k),...
         localnetworkmeasures(:,:,k),BS_input,shockpars,shocktype,targetgroup,liquidityrisk,dispoutput);
     clc
 end
 toc
-
+    
 % Creating global (network-level) regression tables
 CM_table = array2table(cascademodelresults);
-CM_table.Properties.VariableNames = {'NumFailedBanks','Norm_FailedBanks','TotCapitalLoss',...
-    'Norm_CapitalLoss','SimulationTime','d_assetprice_abs','d_assetprice_pct'};
+
+CM_table.Properties.VariableNames = {'NumFailedBanks','Norm_FailedBanks','TotCapitalLoss','Norm_CapitalLoss','TotDepositLoss',...
+    'Norm_DepositLoss','SimulationTime','d_assetprice_abs','d_assetprice_pct'};
 
 BS_EV_table = array2table(BS_exp_vars);
 BS_EV_table.Properties.VariableNames  = {'Init_Assets','Init_Capital','Norm_Init_Capital','Init_IB_exp','Norm_Init_IB_exp'};
@@ -165,7 +169,7 @@ bank_results = cat(2,banks_CDM_results_av,banks_BS_results,localnetworkmeasures)
 
 % (I) Centrality of shocked banks
 for i = 1:numsamples
-    SB_centrality(i,:) = shockedbanks_centrality_av(:,:,i);
+    SB_centrality(i,:) = shockedbanks_centrality_av(:,:,i);    
 end
 
 SBC_table = array2table(SB_centrality);
@@ -178,10 +182,14 @@ initshock_magnitude_av = initshock_magnitude_av';
 ISM_table = array2table(initshock_magnitude_av);
 ISM_table.Properties.VariableNames = {'Shock_size'};
 
+shockedbanks_initBS = shockedbanks_initBS_av;
+IBS_table = array2table(shockedbanks_initBS);
+IBS_table.Properties.VariableNames= {'Init_capital_SB','Init_assets_SB','Init_LR_SB','Init_ext_assets_SB','Init_IBB_SB','Init_IBL_SB'};
+
 timestamp = datestr(datetime('today'));
 
-Data       = [cascademodelresults BS_exp_vars globalnetworkmeasures,SB_centrality,initshock_magnitude_av];
-Data_table = [CM_table BS_EV_table  Global_NM_table SBC_table ISM_table];
+Data       = [cascademodelresults BS_exp_vars globalnetworkmeasures,shockedbanks_initBS,SB_centrality,initshock_magnitude_av];
+Data_table = [CM_table BS_EV_table  Global_NM_table IBS_table SBC_table ISM_table];
 
 % cleaning workspace - 1
 clearvars a_min a_ratio ActiveBank adjacency_matrix alpha beta banksizedist BSpars BS_input d gamma gamma_a i k LH_input n_banks...

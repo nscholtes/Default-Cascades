@@ -51,21 +51,17 @@ pagerank_centrality    = zeros(n_banks,numsamples);
 %--------------------------------------------------------------------------
 
 % Density
-
 for k=1:numsamples
     density(k) = density_dir(adjacency_matrix(:,:,k));
 end
 
 % reciprocity
-
 for k = 1:numsamples
     reciprocity(k) = networkreciprocity(adjacency_matrix(:,:,k));
 end
 
 % Assortativity
-
-for k=1:numsamples
-    
+for k=1:numsamples   
     assortativity_oi(k) = assortativity_bin(adjacency_matrix(:,:,k),1);
     assortativity_io(k) = assortativity_bin(adjacency_matrix(:,:,k),2);
     assortativity_oo(k) = assortativity_bin(adjacency_matrix(:,:,k),3);
@@ -75,7 +71,6 @@ end
 assortativity = [assortativity_oi assortativity_io assortativity_oo assortativity_ii];
 
 % Average path length
-
 for k=1:numsamples    
     distance_matrix(:,:,k) = distance_bin(adjacency_matrix(:,:,k));
     [avpathlength(k),~,~,~,diameter(k)] = charpath(distance_matrix(:,:,k),0,0);
@@ -102,15 +97,35 @@ av_out_deg  = mean(out_degdist,2);   av_in_deg  = mean(in_degdist,2);
 min_out_deg = min(out_degdist,[],2); max_in_deg = min(in_degdist,[],2);  
 max_out_deg = max(out_degdist,[],2); max_in_deg = max(in_degdist,[],2); 
 
+% Average degree
+
+for k = 1:numsamples
+    [indeg(k,:), outdeg(k,:),~] = degrees_dir(adjacency_matrix(:,:,k));
+    
+    av_indeg(k)  = mean(indeg(k,:));
+    av_outdeg(k) = mean(outdeg(k,:));    
+end
+
+sys_av_indeg  = mean(av_indeg)
+sys_av_outdeg = mean(av_outdeg);
+
+sys_std_indeg = std(av_indeg)
+sys_min_indeg = min(av_indeg)
+sys_max_indeg = max(av_indeg)
+
+
+
+
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Output network measures
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-globalnetworkmeasures = [density,reciprocity, assortativity,avpathlength,avclustering];
+globalnetworkmeasures = [density,diameter,reciprocity, assortativity,avpathlength,avclustering];
 
 Global_NM_table = array2table(globalnetworkmeasures);
 
-Global_NM_table.Properties.VariableNames = {'Density','Reciprocity','OutIn_Assortativity','InOut_Assortativity','OutOut_Assortativity','InIn_Assortativity',...
+Global_NM_table.Properties.VariableNames = {'Density','Diameter','Reciprocity','OutIn_Assortativity','InOut_Assortativity','OutOut_Assortativity','InIn_Assortativity',...
     'Average_Path_Length','Average_Clustering'};
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
